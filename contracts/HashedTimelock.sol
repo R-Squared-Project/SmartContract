@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity >=0.5.0 <0.9.0;
 
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+
 /**
  * @title Hashed Timelock Contracts (HTLCs) on Ethereum ETH.
  *
@@ -16,7 +19,8 @@ pragma solidity >=0.5.0 <0.9.0;
  *      withdraw funds the sender / creator of the HTLC can get their ETH
  *      back with this function.
  */
-contract HashedTimelock {
+contract HashedTimelock is Ownable {
+    using SafeMath for uint256;
 
     event LogHTLCNew(
         bytes32 indexed contractId,
@@ -48,7 +52,7 @@ contract HashedTimelock {
         // only requirement is the timelock time is after the last blocktime (now).
         // probably want something a bit further in the future then this.
         // but this is still a useful sanity check:
-        require(_time > now, "timelock time must be in the future");
+        require(_time > block.timestamp, "timelock time must be in the future");
         _;
     }
     modifier contractExists(bytes32 _contractId) {
@@ -65,18 +69,21 @@ contract HashedTimelock {
     modifier withdrawable(bytes32 _contractId) {
         require(contracts[_contractId].receiver == msg.sender, "withdrawable: not receiver");
         require(contracts[_contractId].withdrawn == false, "withdrawable: already withdrawn");
-        require(contracts[_contractId].timelock > now, "withdrawable: timelock time must be in the future");
+        require(contracts[_contractId].timelock > block.timestamp, "withdrawable: timelock time must be in the future");
         _;
     }
     modifier refundable(bytes32 _contractId) {
         require(contracts[_contractId].sender == msg.sender, "refundable: not sender");
         require(contracts[_contractId].refunded == false, "refundable: already refunded");
         require(contracts[_contractId].withdrawn == false, "refundable: already withdrawn");
-        require(contracts[_contractId].timelock <= now, "refundable: timelock not yet passed");
+        require(contracts[_contractId].timelock <= block.timestamp, "refundable: timelock not yet passed");
         _;
     }
 
     mapping (bytes32 => LockContract) contracts;
+    uint fee = 0;
+    uint collectedFee = 0;
+    address freeAddress = address(0);
 
     /**
      * @dev Sender sets up a new hash time lock contract depositing the ETH and
@@ -96,11 +103,18 @@ contract HashedTimelock {
         futureTimelock(_timelock)
         returns (bytes32 contractId)
     {
+        uint amount = msg.value;
+        if (fee > 0 && freeAddress != msg.sender) {
+            require(amount > fee, "too low amount sent");
+            amount = amount - fee;
+            collectedFee = collectedFee + msg.value - amount;
+        }
+
         contractId = sha256(
             abi.encodePacked(
                 msg.sender,
                 _receiver,
-                msg.value,
+                amount,
                 _hashlock,
                 _timelock
             )
@@ -113,9 +127,9 @@ contract HashedTimelock {
             revert("Contract already exists");
 
         contracts[contractId] = LockContract(
-            msg.sender,
+            payable(msg.sender),
             _receiver,
-            msg.value,
+            amount,
             _hashlock,
             _timelock,
             false,
@@ -127,7 +141,7 @@ contract HashedTimelock {
             contractId,
             msg.sender,
             _receiver,
-            msg.value,
+            amount,
             _hashlock,
             _timelock
         );
@@ -179,7 +193,6 @@ contract HashedTimelock {
     /**
      * @dev Get contract details.
      * @param _contractId HTLC contract id
-     * @return All parameters in struct LockContract for _contractId HTLC
      */
     function getContract(bytes32 _contractId)
         public
@@ -222,4 +235,66 @@ contract HashedTimelock {
         exists = (contracts[_contractId].sender != address(0));
     }
 
+    /**
+     * Sets an amount of ETH to subtract from each successful newContract call.
+     * Subtracted amount is accumulated in the smart-contract and is available to withdraw using the collectFee call.
+     *
+     * @param _amount Fixed fee amount
+     */
+    function setFee(uint _amount)
+    external
+    onlyOwner
+    {
+        fee = _amount;
+    }
+
+    /**
+     * @return uint amount of ETH previously set by the setFee call.
+     */
+    function getFee()
+    public
+    view
+    returns(uint)
+    {
+        return fee;
+    }
+
+    /**
+     * Withdraw collected fees to the specified account.
+     *
+     * @param account An address to receive collected fee
+     */
+    function collectFee(address payable account)
+    external
+    onlyOwner
+    {
+        require(collectedFee > 0, "No fee has been collected");
+        account.transfer(collectedFee);
+        collectedFee = 0;
+    }
+
+    /**
+     * Sets an account that is free from paying fees.
+     *
+     * @param account This addres will not pay fee
+     */
+    function setFreeAddress(address account)
+    external
+    onlyOwner
+    {
+        freeAddress = account;
+    }
+
+    /**
+     * Get an account that is free from paying fees.
+     *
+     * @return address An address not charged fee
+     */
+    function getFreeAddress()
+    public
+    view
+    returns(address)
+    {
+        return freeAddress;
+    }
 }
