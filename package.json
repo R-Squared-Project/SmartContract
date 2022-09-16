@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "ganache-start": "ganache-cli --networkId 4447 --port 7545",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "truffle test"
   },
   "author": "",
   "license": "ISC",

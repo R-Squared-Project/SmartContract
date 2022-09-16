@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity >=0.5.0 <0.9.0;
+pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
@@ -19,7 +19,7 @@ import "@openzeppelin/contracts/utils/math/SafeMath.sol";
  *      withdraw funds the sender / creator of the HTLC can get their ETH
  *      back with this function.
  */
-contract HashedTimelock is Ownable {
+contract DepositHashedTimelock is Ownable {
     using SafeMath for uint256;
 
     event LogHTLCNew(
@@ -37,6 +37,7 @@ contract HashedTimelock is Ownable {
         address payable sender;
         address payable receiver;
         uint amount;
+        uint refundAmount;
         bytes32 hashlock; // sha-2 sha256 hash
         uint timelock; // UNIX timestamp seconds - locked UNTIL this time
         bool withdrawn;
@@ -69,7 +70,6 @@ contract HashedTimelock is Ownable {
     modifier withdrawable(bytes32 _contractId) {
         require(contracts[_contractId].receiver == msg.sender, "withdrawable: not receiver");
         require(contracts[_contractId].withdrawn == false, "withdrawable: already withdrawn");
-        require(contracts[_contractId].timelock > block.timestamp, "withdrawable: timelock time must be in the future");
         _;
     }
     modifier refundable(bytes32 _contractId) {
@@ -83,7 +83,6 @@ contract HashedTimelock is Ownable {
     mapping (bytes32 => LockContract) contracts;
     uint fee = 0;
     uint collectedFee = 0;
-    address freeAddress = address(0);
 
     /**
      * @dev Sender sets up a new hash time lock contract depositing the ETH and
@@ -104,10 +103,10 @@ contract HashedTimelock is Ownable {
         returns (bytes32 contractId)
     {
         uint amount = msg.value;
-        if (fee > 0 && freeAddress != msg.sender) {
+        uint refundAmount = msg.value;
+        if (fee > 0) {
             require(amount > fee, "too low amount sent");
-            amount = amount - fee;
-            collectedFee = collectedFee + msg.value - amount;
+            refundAmount = amount - fee;
         }
 
         contractId = sha256(
@@ -130,6 +129,7 @@ contract HashedTimelock is Ownable {
             payable(msg.sender),
             _receiver,
             amount,
+            refundAmount,
             _hashlock,
             _timelock,
             false,
@@ -185,7 +185,11 @@ contract HashedTimelock is Ownable {
     {
         LockContract storage c = contracts[_contractId];
         c.refunded = true;
-        c.sender.transfer(c.amount);
+        if (c.amount > c.refundAmount) {
+            collectedFee = collectedFee + c.amount - c.refundAmount;
+        }
+
+        c.sender.transfer(c.refundAmount);
         emit LogHTLCRefund(_contractId);
         return true;
     }
@@ -201,6 +205,7 @@ contract HashedTimelock is Ownable {
             address sender,
             address receiver,
             uint amount,
+            uint refundAmount,
             bytes32 hashlock,
             uint timelock,
             bool withdrawn,
@@ -209,12 +214,13 @@ contract HashedTimelock is Ownable {
         )
     {
         if (haveContract(_contractId) == false)
-            return (address(0), address(0), 0, 0, 0, false, false, 0);
+            return (address(0), address(0), 0, 0, 0, 0, false, false, 0);
         LockContract storage c = contracts[_contractId];
         return (
             c.sender,
             c.receiver,
             c.amount,
+            c.refundAmount,
             c.hashlock,
             c.timelock,
             c.withdrawn,
@@ -269,32 +275,9 @@ contract HashedTimelock is Ownable {
     onlyOwner
     {
         require(collectedFee > 0, "No fee has been collected");
-        account.transfer(collectedFee);
+        uint sendFee = collectedFee;
         collectedFee = 0;
+        account.transfer(sendFee);
     }
 
-    /**
-     * Sets an account that is free from paying fees.
-     *
-     * @param account This addres will not pay fee
-     */
-    function setFreeAddress(address account)
-    external
-    onlyOwner
-    {
-        freeAddress = account;
-    }
-
-    /**
-     * Get an account that is free from paying fees.
-     *
-     * @return address An address not charged fee
-     */
-    function getFreeAddress()
-    public
-    view
-    returns(address)
-    {
-        return freeAddress;
-    }
 }
